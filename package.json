@@ -70,7 +70,7 @@
     "url": "https://github.com/algoshred/vibe-plugin-ai-openai-compat/issues"
   },
   "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "access": "restricted",
+    "registry": "https://verdaccio.tooling.internal.burdenoff.com/"
   }
 }
