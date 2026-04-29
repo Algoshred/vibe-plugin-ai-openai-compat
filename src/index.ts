@@ -2,13 +2,11 @@
  * vibe-plugin-openai-compat
  *
  * OpenAI Compatible AI agent provider for VibeControls Agent.
- * Implements the AIAgentProvider interface with dual-mode support:
- * - SDK mode: Uses the openai SDK for direct API access
- * - CLI mode: Uses the `codex` CLI with `--quiet -a full-auto` flags
- *
- * Mode auto-detection: SDK if OPENAI_COMPAT_API_KEY is set, CLI if `codex`
- * binary is found, error if neither is available.
+ * Implements the AIAgentProvider interface in SDK mode via an
+ * OpenAI-compatible HTTP endpoint.
  */
+
+import { Elysia } from "elysia";
 
 // ── Locally Redeclared Interfaces ────────────────────────────────────────
 // (Avoid hard dependency on @vibecontrols/agent)
@@ -54,6 +52,13 @@ interface VibePlugin {
   >;
   cliCommand?: string;
   apiPrefix?: string;
+  prerequisites?: Array<{
+    name: string;
+    kind: "binary" | "npm" | "pip" | "cargo" | "manual";
+    requiresSudo: boolean;
+    description?: string;
+  }>;
+  createRoutes?: () => unknown;
   providers?: { ai?: AIAgentProvider; [key: string]: unknown };
   onServerStart?: (
     app: unknown,
@@ -258,6 +263,8 @@ const CLI_COMMAND = "";
 const DISPLAY_NAME = "OpenAI Compatible";
 const DEFAULT_MODEL = "gpt-3.5-turbo";
 const DEFAULT_MAX_TOKENS = 16_384;
+const API_PREFIX = `/api/ai-${PROVIDER_NAME}`;
+const SUPPORTED_MODES: ProviderMode[] = ["sdk"];
 
 const CODEX_MODELS: AIModelInfo[] = [
   {
@@ -330,7 +337,10 @@ interface OpenAIClient {
 
 interface OpenAIResponse {
   id: string;
-  output: Array<{ type: string; content?: Array<{ type: string; text?: string }> }>;
+  output: Array<{
+    type: string;
+    content?: Array<{ type: string; text?: string }>;
+  }>;
   model: string;
   usage: {
     input_tokens: number;
@@ -394,9 +404,7 @@ class CodexSdkAdapter implements ProviderAdapter {
       params["max_output_tokens"] = config.maxTokens;
     }
 
-    const response = (await client.responses.create(
-      params,
-    )) as OpenAIResponse;
+    const response = (await client.responses.create(params)) as OpenAIResponse;
     const durationMs = Date.now() - startTime;
 
     const content = this.extractResponseText(response);
@@ -651,6 +659,18 @@ class CodexProvider implements AIAgentProvider {
       hs.serviceRegistry?.getService<LogIngester>("ai", "log-ingester") ?? null;
   }
 
+  getSupportedModes(): ProviderMode[] {
+    return [...SUPPORTED_MODES];
+  }
+
+  getDisplayName(): string {
+    return DISPLAY_NAME;
+  }
+
+  getPrereqApiPrefix(): string {
+    return API_PREFIX;
+  }
+
   // ── Mode Management ──────────────────────────────────────────────────
 
   getMode(): ProviderMode {
@@ -659,26 +679,15 @@ class CodexProvider implements AIAgentProvider {
   }
 
   setMode(mode: ProviderMode): void {
+    if (!SUPPORTED_MODES.includes(mode)) {
+      throw new Error(`${DISPLAY_NAME} does not support ${mode} mode`);
+    }
     this.activeMode = mode;
     this.adapter = null; // Force re-creation on next use
     this.log("info", `Mode explicitly set to: ${mode}`);
   }
 
   private detectMode(): ProviderMode {
-    if (process.env["OPENAI_COMPAT_API_KEY"]) return "sdk";
-
-    try {
-      const proc = Bun.spawnSync(["which", CLI_COMMAND], {
-        timeout: 3000,
-        stdout: "pipe",
-        stderr: "ignore",
-      });
-      if (proc.exitCode === 0) return "cli";
-    } catch {
-      // CLI not found
-    }
-
-    // Default to SDK mode; healthCheck will report the actual failure
     return "sdk";
   }
 
@@ -1062,15 +1071,28 @@ class CodexProvider implements AIAgentProvider {
 
 // ── Plugin Export ────────────────────────────────────────────────────────
 
+function createPrereqsRoutes() {
+  return new Elysia({ prefix: "/prereqs" })
+    .get("/status", () => ({ satisfied: true, missing: [] }))
+    .post("/install", () => ({
+      ok: true,
+      installed: [],
+      pendingSudo: [],
+      errors: [],
+    }));
+}
+
 const provider = new CodexProvider();
 
 export const vibePlugin: VibePlugin = {
-  name: "codex",
+  name: PROVIDER_NAME,
   version: "1.0.0",
-  description:
-    "OpenAI Compatible AI agent provider for VibeControls (dual-mode: SDK + CLI)",
+  description: "OpenAI-compatible AI provider for VibeControls (SDK mode)",
   tags: ["provider", "integration"],
+  apiPrefix: API_PREFIX,
+  prerequisites: [],
   providers: { ai: provider },
+  createRoutes: () => createPrereqsRoutes(),
 
   onServerStart(_app, hostServices) {
     if (hostServices) provider.setHostServices(hostServices);
