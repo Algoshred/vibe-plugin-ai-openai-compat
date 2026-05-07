@@ -206,6 +206,17 @@ interface AIAgentProvider {
   attachFiles?(sessionId: string, files: AIFileAttachment[]): Promise<void>;
   getMode?(): ProviderMode;
   setMode?(mode: ProviderMode): void;
+  getCliLaunchSpec(): {
+    binary: string;
+    baseArgs?: string[];
+    env?: Record<string, string>;
+  } | null;
+  sdkOneShot(opts: {
+    prompt: string;
+    model?: string;
+    maxTokens?: number;
+    extras?: Record<string, unknown>;
+  }): Promise<{ text: string; usage?: unknown }>;
 }
 
 // Log ingester interface (from ai plugin's service registry)
@@ -972,6 +983,46 @@ class CodexProvider implements AIAgentProvider {
   async healthCheck(): Promise<{ ok: boolean; message?: string }> {
     const adapter = this.getAdapter();
     return adapter.healthCheck();
+  }
+
+  // ── `vibe ai run` / `vibe ai sdk` integration ────────────────────────
+
+  /**
+   * openai-compat is SDK-only — there is no canonical CLI binary, so this
+   * returns null. Use `vibe ai sdk openai-compat` instead.
+   */
+  getCliLaunchSpec(): {
+    binary: string;
+    baseArgs?: string[];
+    env?: Record<string, string>;
+  } | null {
+    return null;
+  }
+
+  async sdkOneShot(opts: {
+    prompt: string;
+    model?: string;
+    maxTokens?: number;
+    extras?: Record<string, unknown>;
+  }): Promise<{ text: string; usage?: unknown }> {
+    const adapter = new CodexSdkAdapter();
+    const config: AISessionConfig = {
+      name: "vibe-ai-sdk",
+      agentType: PROVIDER_NAME,
+      model: opts.model ?? DEFAULT_MODEL,
+      maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      providerConfig: opts.extras,
+    };
+    const result = await adapter.sendPrompt(opts.prompt, config);
+    return {
+      text: result.content,
+      usage: {
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        model: result.model,
+        durationMs: result.durationMs,
+      },
+    };
   }
 
   // ── Private Helpers ──────────────────────────────────────────────────
