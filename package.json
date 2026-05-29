@@ -77,5 +77,11 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
-  }
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Vignesh T.V",
+    "url": "https://github.com/tvvignesh"
+  },
+  "homepage": "https://vibecontrols.com"
 }
