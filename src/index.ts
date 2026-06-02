@@ -338,22 +338,52 @@ interface OpenAIStreamEvent {
 class CodexSdkAdapter implements ProviderAdapter {
   readonly mode: ProviderMode = "sdk";
   private client: OpenAIClient | null = null;
+  private readonly resolveApiKey: () => Promise<string | undefined>;
+  private readonly resolveBaseUrl: () => Promise<string | undefined>;
+
+  /**
+   * Takes async resolvers so the key + base URL are read fresh from env OR the
+   * agent config bag the frontend writes to (PUT /api/config/OPENAI_COMPAT_*),
+   * rather than only from process.env at construction time.
+   */
+  constructor(
+    resolveApiKey: () => Promise<string | undefined>,
+    resolveBaseUrl: () => Promise<string | undefined>,
+  ) {
+    this.resolveApiKey = resolveApiKey;
+    this.resolveBaseUrl = resolveBaseUrl;
+  }
 
   private async getClient(): Promise<OpenAIClient> {
     if (this.client) return this.client;
 
+    const apiKey = (await this.resolveApiKey())?.trim();
+    if (!apiKey) {
+      throw new Error(
+        "OPENAI_COMPAT_API_KEY is required for SDK mode. Set it in the AI " +
+          "provider credentials (stored in the agent config) or export it in " +
+          "the agent environment.",
+      );
+    }
+    const baseURL = (await this.resolveBaseUrl())?.trim();
+
+    let OpenAI: new (opts: { apiKey: string; baseURL?: string }) => unknown;
     try {
       const mod = await import("openai");
-      const OpenAI = mod.default ?? mod;
-      this.client = new OpenAI({
-        apiKey: process.env["OPENAI_COMPAT_API_KEY"],
-      }) as unknown as OpenAIClient;
-      return this.client;
+      OpenAI = (mod.default ?? mod) as new (opts: {
+        apiKey: string;
+        baseURL?: string;
+      }) => unknown;
     } catch {
       throw new Error(
         "Failed to load openai SDK. Install it with: bun add openai",
       );
     }
+    this.client = new OpenAI({
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+    }) as unknown as OpenAIClient;
+    return this.client;
   }
 
   async sendPrompt(
@@ -634,6 +664,8 @@ class CodexProvider implements AIAgentProvider {
   private logger: BoundLogger | null = null;
   private activeMode: ProviderMode | null = null;
   private adapter: ProviderAdapter | null = null;
+  private cachedApiKey: string | undefined;
+  private cachedBaseUrl: string | undefined;
 
   setHostServices(hs: HostServices): void {
     this.hostServices = hs;
@@ -641,6 +673,60 @@ class CodexProvider implements AIAgentProvider {
     const registry = new ProviderRegistry(hs);
     this.logIngester =
       registry.getProvider<LogIngester>("ai", "log-ingester") ?? null;
+
+    // Warm the cache so the key/base URL saved in the agent config bag are
+    // available, not just env vars.
+    void Promise.all([
+      Promise.resolve(hs.getConfig?.("OPENAI_COMPAT_API_KEY")),
+      Promise.resolve(hs.getConfig?.("OPENAI_COMPAT_BASE_URL")),
+    ])
+      .then(([key, baseUrl]) => {
+        if (key?.trim()) this.cachedApiKey = key.trim();
+        if (baseUrl?.trim()) this.cachedBaseUrl = baseUrl.trim();
+      })
+      .catch(() => {});
+  }
+
+  /** Resolve the API key: env → cache → agent config bag. */
+  private async resolveApiKey(): Promise<string | undefined> {
+    const envKey = process.env["OPENAI_COMPAT_API_KEY"]?.trim();
+    if (envKey) return envKey;
+    if (this.cachedApiKey) return this.cachedApiKey;
+    if (this.hostServices?.getConfig) {
+      try {
+        const key = (
+          await this.hostServices.getConfig("OPENAI_COMPAT_API_KEY")
+        )?.trim();
+        if (key) {
+          this.cachedApiKey = key;
+          return key;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /** Resolve the base URL: env → cache → agent config bag (optional). */
+  private async resolveBaseUrl(): Promise<string | undefined> {
+    const envUrl = process.env["OPENAI_COMPAT_BASE_URL"]?.trim();
+    if (envUrl) return envUrl;
+    if (this.cachedBaseUrl) return this.cachedBaseUrl;
+    if (this.hostServices?.getConfig) {
+      try {
+        const url = (
+          await this.hostServices.getConfig("OPENAI_COMPAT_BASE_URL")
+        )?.trim();
+        if (url) {
+          this.cachedBaseUrl = url;
+          return url;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   getSupportedModes(): ProviderMode[] {
@@ -680,7 +766,12 @@ class CodexProvider implements AIAgentProvider {
 
     const mode = this.getMode();
     this.adapter =
-      mode === "sdk" ? new CodexSdkAdapter() : new CodexCliAdapter();
+      mode === "sdk"
+        ? new CodexSdkAdapter(
+            () => this.resolveApiKey(),
+            () => this.resolveBaseUrl(),
+          )
+        : new CodexCliAdapter();
     this.activeMode = mode;
     this.log("info", `Adapter initialized in ${mode} mode`);
     return this.adapter;
@@ -978,7 +1069,10 @@ class CodexProvider implements AIAgentProvider {
     maxTokens?: number;
     extras?: Record<string, unknown>;
   }): Promise<{ text: string; usage?: unknown }> {
-    const adapter = new CodexSdkAdapter();
+    const adapter = new CodexSdkAdapter(
+      () => this.resolveApiKey(),
+      () => this.resolveBaseUrl(),
+    );
     const config: AISessionConfig = {
       name: "vibe-ai-sdk",
       agentType: PROVIDER_NAME,
