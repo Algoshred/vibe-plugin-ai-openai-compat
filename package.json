@@ -69,10 +69,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/algoshred/vibe-plugin-ai-openai-compat.git"
+    "url": "git+https://github.com/Algoshred/vibe-plugin-ai-openai-compat.git"
   },
   "bugs": {
-    "url": "https://github.com/algoshred/vibe-plugin-ai-openai-compat/issues"
+    "url": "https://github.com/Algoshred/vibe-plugin-ai-openai-compat/issues"
   },
   "publishConfig": {
     "access": "public",
