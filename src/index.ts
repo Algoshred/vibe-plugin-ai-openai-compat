@@ -312,6 +312,7 @@ interface OpenAIClient {
   responses: {
     create(
       params: Record<string, unknown>,
+      options?: { signal?: AbortSignal },
     ): Promise<OpenAIResponse> & AsyncIterable<OpenAIStreamEvent>;
   };
 }
@@ -415,7 +416,10 @@ class CodexSdkAdapter implements ProviderAdapter {
       params["max_output_tokens"] = config.maxTokens;
     }
 
-    const response = (await client.responses.create(params)) as OpenAIResponse;
+    const response = (await client.responses.create(
+      params,
+      signal ? { signal } : undefined,
+    )) as OpenAIResponse;
     const durationMs = Date.now() - startTime;
 
     const content = this.extractResponseText(response);
@@ -463,6 +467,7 @@ class CodexSdkAdapter implements ProviderAdapter {
 
     const stream = client.responses.create(
       params,
+      signal ? { signal } : undefined,
     ) as AsyncIterable<OpenAIStreamEvent>;
 
     const collectedText: string[] = [];
